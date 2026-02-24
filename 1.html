@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Bulgy Metallic Button — Live Camera Reflection</title>
+  <style>
+    :root{
+      --btn-width: 360px;
+      --btn-height: 160px;
+      --radius: 40px;
+      --metal-base: #c7cbd0;
+      --metal-dark: #8b9097;
+      --metal-light: #ffffff;
+      --accent: #9fc9ff;
+    }
+    html,body{height:100%;}
+    body{
+      margin:0;
+      display:grid;
+      place-items:center;
+      background: linear-gradient(180deg,#0b1220 0%, #0f1520 100%);
+      font-family: Inter, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial;
+      color:#e8f0ff;
+    }
+
+    .stage{display:flex;gap:18px;align-items:center;flex-direction:column}
+
+    /* Outer metallic button container (bulged) */
+    .metallic-btn{
+      width:var(--btn-width);
+      height:var(--btn-height);
+      border-radius:999px; /* pill shaped */
+      position:relative;
+      display:block;
+      --rim: 6px;
+      box-shadow:
+        0 18px 40px rgba(0,0,0,0.6),
+        inset 0 10px 28px rgba(255,255,255,0.06);
+      background: linear-gradient(180deg, rgba(255,255,255,0.12), rgba(0,0,0,0.18));
+      overflow:visible;
+    }
+
+    /* The canvas that will show the bulged live video */
+    .video-canvas{
+      position:absolute; left:var(--rim); top:var(--rim); right:var(--rim); bottom:var(--rim);
+      border-radius:999px; overflow:hidden; z-index:3; display:block;
+      box-shadow: inset 0 -8px 24px rgba(0,0,0,0.25);
+      transform-origin:center center;
+    }
+
+    /* metallic finish on top of video */
+    .metallic-overlay{
+      position:absolute; inset:0; border-radius:999px; pointer-events:none; z-index:4;
+      background:
+        radial-gradient(120% 60% at 20% 20%, rgba(255,255,255,0.35), rgba(255,255,255,0.05) 12%, rgba(255,255,255,0.02) 20%, transparent 40%),
+        linear-gradient(180deg, rgba(255,255,255,0.06), rgba(0,0,0,0.12));
+      mix-blend-mode:overlay;
+    }
+
+    /* Glossy specular highlight to make it bulgy/shiny */
+    .specular{
+      position:absolute; inset:0; border-radius:999px; pointer-events:none; z-index:6;
+      background: radial-gradient(circle at 30% 18%, rgba(255,255,255,0.75) 0%, rgba(255,255,255,0.18) 8%, rgba(255,255,255,0.02) 20%, transparent 45%);
+      mix-blend-mode:screen;
+    }
+
+    /* Grain layer */
+    .grain{
+      position:absolute; inset:0; border-radius:999px; pointer-events:none; z-index:7; opacity:0.35; mix-blend-mode:overlay;
+      background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><filter id="n"><feTurbulence baseFrequency="0.9" numOctaves="1" type="fractalNoise"/><feColorMatrix type="saturate" values="0"/></filter><rect width="100%" height="100%" filter="url(%23n)" opacity="0.18"/></svg>');
+      background-size: 120px 120px;
+    }
+
+    /* Small rim to create bevel */
+    .rim{
+      position:absolute; inset:0; border-radius:999px; pointer-events:none; z-index:5; padding:6px;
+      box-shadow: inset 0 2px 8px rgba(255,255,255,0.18), inset 0 -6px 18px rgba(0,0,0,0.35);
+    }
+
+    /* Reflection (fake) drawn below the button */
+    .reflection-wrap{ width:var(--btn-width); height: calc(var(--btn-height) * 0.55); overflow:visible; pointer-events:none; position:relative }
+    .reflection-wrap canvas{ border-radius:50px; display:block }
+
+    .label{font-size:13px; opacity:0.95; margin-top:6px}
+    .note{font-size:12px; opacity:0.75}
+
+    @media(max-width:460px){ :root{ --btn-width: 300px; --btn-height:130px } }
+  </style>
+</head>
+<body>
+  <div class="stage">
+    <div class="metallic-btn" id="metallicBtn">
+      <canvas id="mainCanvas" class="video-canvas"></canvas>
+      <div class="metallic-overlay"></div>
+      <div class="rim"></div>
+      <div class="specular"></div>
+      <div class="grain"></div>
+    </div>
+
+    <div class="reflection-wrap" aria-hidden>
+      <canvas id="reflectionCanvas"></canvas>
+    </div>
+
+    <div class="label">Click inside the button area to toggle camera (tap to focus). Live bulged reflection wrapped on shiny curved button.</div>
+    <div class="note">Works locally. For best results use a front camera and good lighting.</div>
+  </div>
+
+  <video id="video" autoplay playsinline muted style="display:none"></video>
+
+  <script>
+    const video = document.getElementById('video');
+    const mainCanvas = document.getElementById('mainCanvas');
+    const refCanvas = document.getElementById('reflectionCanvas');
+    const btn = document.getElementById('metallicBtn');
+
+    // controls
+    let stream = null;
+    let running = false;
+
+    async function startCamera(){
+      try{
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' , width: {ideal: 1280}, height: {ideal: 720} }, audio:false });
+        video.srcObject = stream; await video.play(); running = true; requestAnimationFrame(loop);
+      }catch(e){ console.error(e); alert('Camera blocked or not available. Use https and allow permissions.'); }
+    }
+
+    function stopCamera(){ if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; running=false; } }
+
+    btn.addEventListener('click', ()=>{ if(!running) startCamera(); else stopCamera(); });
+
+    // HiDPI resize helper
+    function setCanvasSize(canvas, cssW, cssH){ const ratio = window.devicePixelRatio||1; const w = Math.max(1, Math.floor(cssW*ratio)); const h = Math.max(1, Math.floor(cssH*ratio)); if(canvas.width !== w || canvas.height !== h){ canvas.width = w; canvas.height = h; canvas.style.width = cssW + 'px'; canvas.style.height = cssH + 'px'; } }
+
+    // Bulge distortion mapping (fast-ish): sample from offscreen and map to main canvas using polar distortion
+    function applyBulge(srcCanvas, dstCtx, bulgeStrength=0.65, bulgeRadius=0.9){
+      const sw = srcCanvas.width; const sh = srcCanvas.height;
+      const dw = dstCtx.canvas.width; const dh = dstCtx.canvas.height;
+
+      const src = srcCanvas.getContext('2d');
+      const srcData = src.getImageData(0,0,sw,sh).data;
+      const dstImage = dstCtx.createImageData(dw, dh);
+      const dst = dstImage.data;
+
+      // center and scale
+      const cx = dw/2, cy = dh/2;
+      const maxR = Math.min(cx, cy) * bulgeRadius;
+      const invStrideX = sw / dw; const invStrideY = sh / dh;
+
+      // precompute for speed
+      for(let y=0;y<dh;y++){
+        const dy = (y - cy);
+        for(let x=0;x<dw;x++){
+          const dx = (x - cx);
+          const r = Math.sqrt(dx*dx + dy*dy);
+          let nx = x, ny = y;
+          if(r < maxR){
+            // normalized radius 0..1
+            const rn = r / maxR;
+            // bulge function: push pixels outward near center and compress near edges
+            const theta = Math.atan2(dy, dx);
+            // displacement amount (ease curve)
+            const displacement = (Math.sin((rn * Math.PI)/2) * bulgeStrength) * (1 - rn);
+            const nr = r + displacement * maxR;
+            nx = cx + nr * Math.cos(theta);
+            ny = cy + nr * Math.sin(theta);
+          }
+          // sample nearest neighbor from source (scaled coordinates)
+          const sx = Math.min(sw-1, Math.max(0, Math.round(nx * invStrideX)));
+          const sy = Math.min(sh-1, Math.max(0, Math.round(ny * invStrideY)));
+          const sIdx = (sy * sw + sx) * 4;
+          const dIdx = (y * dw + x) * 4;
+          dst[dIdx] = srcData[sIdx];
+          dst[dIdx+1] = srcData[sIdx+1];
+          dst[dIdx+2] = srcData[sIdx+2];
+          dst[dIdx+3] = srcData[sIdx+3];
+        }
+      }
+
+      dstCtx.putImageData(dstImage, 0, 0);
+    }
+
+    // create an offscreen canvas used to draw the video frame at the source resolution
+    function createOffscreen(w,h){ const c = document.createElement('canvas'); c.width = w; c.height = h; return c; }
+
+    let tmpSrc = null;
+
+    function loop(){
+      if(!running){ requestAnimationFrame(loop); return; }
+
+      // compute sizes based on button inner rect (account for rim)
+      const rect = btn.getBoundingClientRect();
+      const rim = 6;
+      const cssW = Math.max(20, rect.width - rim*2);
+      const cssH = Math.max(20, rect.height - rim*2);
+
+      // reflection canvas
+      const refWrap = refCanvas.parentElement.getBoundingClientRect();
+
+      // set canvas pixel sizes
+      setCanvasSize(mainCanvas, cssW, cssH);
+      setCanvasSize(refCanvas, refWrap.width, refWrap.height);
+
+      // decide source downscale for performance (keep moderate resolution)
+      // We'll render video to tmpSrc at half of display resolution to speed up pixel manipulation
+      const ratio = window.devicePixelRatio || 1;
+      const srcW = Math.max(64, Math.floor(mainCanvas.width / 2));
+      const srcH = Math.max(48, Math.floor(mainCanvas.height / 2));
+      if(!tmpSrc || tmpSrc.width !== srcW || tmpSrc.height !== srcH) tmpSrc = createOffscreen(srcW, srcH);
+
+      const sctx = tmpSrc.getContext('2d');
+      // fill black while waiting
+      sctx.clearRect(0,0,srcW,srcH);
+      // compute cover scaling for video -> tmpSrc
+      const vidW = video.videoWidth || 640; const vidH = video.videoHeight || 480;
+      if(vidW === 0 || vidH === 0){ requestAnimationFrame(loop); return; }
+      const scale = Math.max(srcW / vidW, srcH / vidH);
+      const dw = vidW * scale; const dh = vidH * scale;
+      const sx = (srcW - dw) / 2; const sy = (srcH - dh) / 2;
+      try{ sctx.drawImage(video, 0,0,vidW,vidH, sx, sy, dw, dh); }catch(e){ /* drawing may fail if not ready */ }
+
+      // apply slight desaturate & contrast on source for metallic feel
+      const applyFilter = (ctx)=>{
+        ctx.globalCompositeOperation = 'source-over';
+        // tiny vignette on source
+        const g = ctx.createRadialGradient(srcW*0.5, srcH*0.35, srcW*0.05, srcW*0.5, srcH*0.5, Math.max(srcW,srcH)*0.8);
+        g.addColorStop(0, 'rgba(255,255,255,0.02)');
+        g.addColorStop(0.6, 'rgba(0,0,0,0.06)');
+        g.addColorStop(1, 'rgba(0,0,0,0.12)');
+        ctx.fillStyle = g; ctx.fillRect(0,0,srcW,srcH);
+      };
+      applyFilter(sctx);
+
+      // destination ctx
+      const dctx = mainCanvas.getContext('2d');
+      dctx.clearRect(0,0,mainCanvas.width, mainCanvas.height);
+
+      // apply bulge distortion: map tmpSrc -> mainCanvas
+      applyBulge(tmpSrc, dctx, 0.9, 0.95);
+
+      // enhance with a subtle top highlight (simulate curved bulge)
+      const spec = dctx.createRadialGradient(mainCanvas.width*0.28, mainCanvas.height*0.18, 10, mainCanvas.width*0.28, mainCanvas.height*0.18, Math.max(mainCanvas.width, mainCanvas.height));
+      spec.addColorStop(0, 'rgba(255,255,255,0.18)');
+      spec.addColorStop(0.08, 'rgba(255,255,255,0.06)');
+      spec.addColorStop(0.2, 'rgba(255,255,255,0.02)');
+      spec.addColorStop(1, 'rgba(0,0,0,0.0)');
+      dctx.globalCompositeOperation = 'overlay';
+      dctx.fillStyle = spec;
+      dctx.fillRect(0,0,mainCanvas.width, mainCanvas.height);
+      dctx.globalCompositeOperation = 'source-over';
+
+      // add grain by drawing semi-transparent noise (faster: tiny repeated pattern)
+      // We'll overlay a translucent noise pattern using canvas pattern
+      if(!window.__grainPattern){
+        const g = document.createElement('canvas'); g.width=64; g.height=64; const gc = g.getContext('2d');
+        const id = gc.createImageData(64,64);
+        for(let i=0;i<id.data.length;i+=4){ const v = 128 + (Math.random()*40-20); id.data[i]=v; id.data[i+1]=v; id.data[i+2]=v; id.data[i+3]=Math.floor(40 + Math.random()*60); }
+        gc.putImageData(id,0,0);
+        window.__grainPattern = dctx.createPattern(g,'repeat');
+      }
+      dctx.save(); dctx.globalAlpha = 0.08; dctx.fillStyle = window.__grainPattern; dctx.fillRect(0,0,mainCanvas.width, mainCanvas.height); dctx.restore();
+
+      // draw reflection: use the bulged image flipped vertically, then apply fade & blur-ish
+      const rctx = refCanvas.getContext('2d'); rctx.clearRect(0,0,refCanvas.width, refCanvas.height);
+      // draw scaled copy of mainCanvas into reflection canvas with vertical flip
+      rctx.save(); rctx.translate(0, refCanvas.height); rctx.scale(1,-1);
+      // we want the reflection narrower and slightly compressed
+      const destW = refCanvas.width; const destH = Math.floor(refCanvas.height * 0.95);
+      rctx.globalAlpha = 0.85; rctx.drawImage(mainCanvas, 0, 0, mainCanvas.width, mainCanvas.height, 0, Math.max(0,(refCanvas.height - destH)/2), destW, destH);
+      rctx.restore();
+
+      // fade mask for reflection
+      rctx.save(); rctx.globalCompositeOperation = 'destination-in';
+      const mask = rctx.createLinearGradient(0,0,0,refCanvas.height);
+      mask.addColorStop(0, 'rgba(0,0,0,0.5)'); mask.addColorStop(0.25, 'rgba(0,0,0,0.25)'); mask.addColorStop(1, 'rgba(0,0,0,0)');
+      rctx.fillStyle = mask; rctx.fillRect(0,0,refCanvas.width, refCanvas.height); rctx.restore();
+
+      // quick blur illusion: draw scaled down and up for softness
+      try{
+        const tmp = document.createElement('canvas'); tmp.width = refCanvas.width; tmp.height = refCanvas.height; const t = tmp.getContext('2d');
+        t.filter = 'blur(6px)'; t.drawImage(refCanvas,0,0);
+        rctx.save(); rctx.globalAlpha = 0.35; rctx.drawImage(tmp,0,0); rctx.restore();
+      }catch(e){ /* ignore if not supported */ }
+
+      requestAnimationFrame(loop);
+    }
+
+    // start paused; user clicks button to start camera
+    // but also start automatically if user prefers
+    // Uncomment to auto-start: startCamera();
+
+    // resize handler
+    window.addEventListener('resize', ()=>{/* canvas will be resized next frame */});
+  </script>
+</body>
+</html>
